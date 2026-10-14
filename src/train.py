@@ -63,6 +63,10 @@ CV_FOLDS = [
     ("2025-08-31", "2025-09-01", "2025-10-31"),   # fold 3
 ]
 
+# Recency weighting: training row weight = exp(-age_days / RECENCY_DAYS), where
+# age is measured back from the latest date in that training set.
+RECENCY_DAYS = 90
+
 # HGBR hyper-parameters (same for both loss variants)
 HGBR_PARAMS = dict(
     max_iter=500,
@@ -143,6 +147,12 @@ def naive_baseline_predict(train_df: pd.DataFrame, val_df: pd.DataFrame) -> np.n
     return median_rpm * val_df["distance"].values
 
 
+def recency_weights(dates: pd.Series, days: float = RECENCY_DAYS) -> np.ndarray:
+    """Exponential decay weights: newest training day = 1, older days fade."""
+    age_days = (dates.max() - dates).dt.days.to_numpy()
+    return np.exp(-age_days / days)
+
+
 # ─── Cross-validation ─────────────────────────────────────────────────────────
 
 def run_cv(train_full: pd.DataFrame) -> pd.DataFrame:
@@ -174,6 +184,7 @@ def run_cv(train_full: pd.DataFrame) -> pd.DataFrame:
         # ── Targets: log(RPM) ─────────────────────────────────────────
         rpm_tr = train_clean["posted_rate"] / train_clean["distance"]
         y_tr   = np.log(rpm_tr.values)
+        w_tr   = recency_weights(train_clean["date"])
 
         dist_va   = fold_val["distance"].values
         y_va_true = fold_val["posted_rate"].values
@@ -184,13 +195,13 @@ def run_cv(train_full: pd.DataFrame) -> pd.DataFrame:
 
         # ── Model 1: HGBR squared_error ───────────────────────────────
         m1_hgbr = HistGradientBoostingRegressor(loss="squared_error", **HGBR_PARAMS)
-        m1_hgbr.fit(X_tr, y_tr)
+        m1_hgbr.fit(X_tr, y_tr, sample_weight=w_tr)
         preds_sq = np.exp(m1_hgbr.predict(X_va)) * dist_va
         m1 = eval_all_and_noo(y_va_true, preds_sq, dist_va, "hgbr_sq")
 
         # ── Model 2: HGBR absolute_error ──────────────────────────────
         m2_hgbr = HistGradientBoostingRegressor(loss="absolute_error", **HGBR_PARAMS)
-        m2_hgbr.fit(X_tr, y_tr)
+        m2_hgbr.fit(X_tr, y_tr, sample_weight=w_tr)
         preds_ae = np.exp(m2_hgbr.predict(X_va)) * dist_va
         m2 = eval_all_and_noo(y_va_true, preds_ae, dist_va, "hgbr_ae")
 
@@ -265,7 +276,7 @@ def train_final(
     y_tr   = np.log(rpm_tr.values)
 
     model = HistGradientBoostingRegressor(loss=loss, **HGBR_PARAMS)
-    model.fit(X_tr, y_tr)
+    model.fit(X_tr, y_tr, sample_weight=recency_weights(train_clean["date"]))
 
     print(f"  Training complete.  n_iterations={model.n_iter_}")
     return model, arts
@@ -357,7 +368,9 @@ def predict_december(
     dec_df = pd.DataFrame(dec_rows)
 
     # Predict (use fitted artifacts from final model)
-    X_dec, _, _ = build_features(dec_df, fit=False, artifacts=arts)
+    # day_ref: a single synthetic row per day still gets that day's real
+    # market medians (from the validation inputs) for the day-level features.
+    X_dec, _, _ = build_features(dec_df, fit=False, artifacts=arts, day_ref=val_df)
     log_rpm_pred = model.predict(X_dec)
     predicted_rate = np.exp(log_rpm_pred) * 360.0
 

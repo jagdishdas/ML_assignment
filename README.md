@@ -39,6 +39,12 @@ This produces:
 - `validation_predictions.csv` — 12,000 final rate predictions
 - `december_chart_inputs_completed.csv` — 31 December daily predictions
 
+Optional — re-run the feature ablation used in the report (writes `outputs/ablation_results.csv`):
+
+```bash
+python src/ablation.py
+```
+
 ### 2. Validate outputs and generate the December chart
 
 ```bash
@@ -58,9 +64,11 @@ This produces `scorer_results/candidate_december.png`.
 ML_assignment/
 ├── src/
 │   ├── features.py            Feature engineering (cleaning, encoding, imputation)
-│   └── train.py               CV, model training, prediction pipeline
+│   ├── train.py               CV, model training, prediction pipeline
+│   └── ablation.py            Feature / recency ablation over the same CV folds
 ├── outputs/
-│   └── cv_results.csv         Cross-validation results table
+│   ├── cv_results.csv         Cross-validation results table
+│   └── ablation_results.csv   Ablation results table
 ├── scorer_results/
 │   └── candidate_december.png December rate chart
 ├── data/
@@ -73,6 +81,7 @@ ML_assignment/
 ├── score.py                   Assessment validator (do not modify)
 ├── requirements.txt
 ├── README.md
+├── make_report_docx.py        Rebuilds report.docx from the result files
 └── report.docx                Write-up (validation approach + December chart)
 ```
 
@@ -82,12 +91,19 @@ ML_assignment/
 
 | Decision | Rationale |
 |----------|-----------|
-| Target: `log(RPM)` | Stabilises heteroscedastic variance; recovers $ via `exp × dist` |
-| No `month_of_year` feature | HGBR trees cannot extrapolate to unseen months (Nov–Dec) |
-| `day_of_week`, `day_of_month` | Capture within-week and within-month cyclical patterns |
-| RPM outliers excluded from training | Spec requirement; kept in "all rows" evaluation |
-| Market index NaN → date-median from inputs | No target leakage; matches spec |
+| Target: `log(RPM)` | RPM is strongly right-skewed (skew 8.72 → −0.04 after log); prediction = `exp × dist`, always positive |
+| No `month_of_year` feature | A month code means nothing for unseen months (Nov–Dec) |
+| `day_index` (days since 2025-01-01) + recency weights `exp(-age/90 d)` | Later dates map to the latest training period; the model follows the current market level. Removed a ~2.5% under-prediction seen in every CV fold |
+| Day-level market features (`day_mi_median`, `day_qs_median`, `quote_rel`) | `market_index` is a daily market level; these use inputs only (no target) |
+| `day_of_week`, `day_of_month` | Capture within-week and within-month patterns |
+| RPM outliers (< 1.2 or > 4.5 $/mi) excluded from training | Kept in the "all rows" evaluation |
+| Market index NaN → date-median from inputs | No target leakage |
 | Seed = 42 everywhere | Deterministic, reproducible outputs |
+
+Rolling-origin CV (3 expanding folds), non-outlier WAPE: naive baseline 8.76% →
+original model 3.34% → final model 2.66% (see `outputs/ablation_results.csv`).
+The recency constant and features were chosen on these same folds, so treat 2.66%
+as somewhat optimistic.
 
 See `report.docx` for full details.
 

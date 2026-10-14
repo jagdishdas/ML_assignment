@@ -28,6 +28,7 @@ EARTH_RADIUS_MILES = 3_958.8          # mean Earth radius in miles
 WEIGHT_CENSOR_HIGH = 47_500.0         # right-censored upper bound
 RPM_LOW_OUTLIER    = 1.2              # $/mi  – outlier threshold (lower)
 RPM_HIGH_OUTLIER   = 4.5             # $/mi  – outlier threshold (upper)
+DAY_INDEX_ORIGIN   = pd.Timestamp("2025-01-01")   # day_index = days since this date
 
 # Feature columns in the exact order produced by build_features()
 FEATURE_NAMES: list[str] = [
@@ -53,6 +54,10 @@ FEATURE_NAMES: list[str] = [
     "pickup_enc",         # label-encoded pickup city
     "delivery_enc",       # label-encoded delivery city
     "lane_enc",           # label-encoded "pickup -> delivery" lane
+    "day_mi_median",      # that date's median market_index over all loads (inputs only)
+    "day_qs_median",      # that date's median quote_signal over all loads (inputs only)
+    "quote_rel",          # log(quote_signal / day_qs_median): this load vs the day's market
+    "day_index",          # days since 2025-01-01 (monotone; later dates share the latest bin)
 ]
 
 
@@ -161,12 +166,37 @@ def _fill_market_index(
     return mi, df_global_median
 
 
+# ─── Helper: day-level market statistics ──────────────────────────────────────
+
+def _day_market_stats(
+    df: pd.DataFrame,
+    date_col: pd.Series,
+    day_ref: pd.DataFrame | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Per-date median market_index and quote_signal (inputs only, no target).
+
+    Medians come from `day_ref` when given (e.g. the validation rows, so a
+    single synthetic December row still sees that day's real market level),
+    otherwise from `df` itself. Dates missing from the reference fall back to
+    the reference's overall median.
+    """
+    ref = df if day_ref is None else day_ref
+    ref_dates = pd.to_datetime(ref["date"])
+    out = []
+    for col in ("market_index", "quote_signal"):
+        by_date = ref[col].groupby(ref_dates).median()
+        out.append(date_col.map(by_date).fillna(float(ref[col].median())).to_numpy())
+    return out[0], out[1]
+
+
 # ─── Main: Build feature matrix ───────────────────────────────────────────────
 
 def build_features(
     df: pd.DataFrame,
     fit: bool = True,
     artifacts: dict | None = None,
+    day_ref: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, list[str], dict]:
     """
     Build the feature matrix from a raw freight dataframe.
@@ -179,6 +209,8 @@ def build_features(
     artifacts : dict produced by a previous call with fit=True.
                 Required when fit=False.
                 Keys: 'encoders', 'weight_medians', 'global_mi_median'
+    day_ref   : optional dataframe (with date, market_index, quote_signal) used
+                for the day-level market medians instead of df itself.
 
     Returns
     -------
@@ -219,9 +251,11 @@ def build_features(
     )
     df["dist_minus_hav"] = df["distance"] - df["hav_dist"]
 
-    # ── Date features (NO month_of_year, NO day_of_year) ──────────────
-    # Trees cannot extrapolate monotone time features to unseen months;
-    # day-of-week and day-of-month capture cyclical patterns safely.
+    # ── Date features (NO month_of_year; cyclical + monotone day_index) ─
+    # Day-of-week / day-of-month capture within-week and within-month patterns.
+    # A month-of-year code would be meaningless for unseen months, so the only
+    # long-run time feature is day_index (added below): trees map every later
+    # date to the latest training period instead of extrapolating a trend.
     df["day_of_week"]  = date_col.dt.dayofweek          # 0=Mon … 6=Sun
     df["day_of_month"] = date_col.dt.day                  # 1–31
     df["is_weekend"]   = (date_col.dt.dayofweek >= 5).astype(int)
@@ -257,6 +291,13 @@ def build_features(
                 le.classes_ = np.append(le.classes_, "__unknown__")
             df[col + "_enc"] = le.transform(mapped)
 
+    # ── Day-level market context + time position ──────────────────────
+    # Medians are over input columns only (no target), so they are available
+    # for unlabeled validation days too.
+    df["day_mi_median"], df["day_qs_median"] = _day_market_stats(df, date_col, day_ref)
+    df["quote_rel"] = np.log(df["quote_signal"] / df["day_qs_median"])
+    df["day_index"] = (date_col - DAY_INDEX_ORIGIN).dt.days
+
     # ── Assemble feature matrix ───────────────────────────────────────
     X = df[FEATURE_NAMES].values.astype(np.float64)
 
@@ -274,7 +315,7 @@ def build_features(
 def rpm_outlier_mask(posted_rate: pd.Series, distance: pd.Series) -> pd.Series:
     """
     Return a boolean Series: True where rate-per-mile is an outlier.
-    Thresholds: RPM < 1.2 or RPM > 4.5 (per assessment spec).
+    Fixed thresholds: RPM < 1.2 or RPM > 4.5 $/mi (RPM_LOW/HIGH_OUTLIER above).
     """
     rpm = posted_rate / distance
     return (rpm < RPM_LOW_OUTLIER) | (rpm > RPM_HIGH_OUTLIER)

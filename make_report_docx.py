@@ -1,9 +1,13 @@
 """
 make_report_docx.py  — Generate report.docx (US Letter, ~2-3 pages)
 
-All numbers come exclusively from:
+Model numbers are read from the result files (nothing is typed in by hand):
   outputs/cv_results.csv
+  outputs/ablation_results.csv
+  december_chart_inputs_completed.csv
   scorer_results/candidate_december.png
+Data-quality counts in Section 2 and the split sizes in Section 3 were
+computed from the raw CSVs and are fixed text.
 
 Run from repo root:
     python make_report_docx.py
@@ -22,8 +26,41 @@ from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 
 ROOT      = Path(__file__).resolve().parent
 CV_PATH   = ROOT / "outputs" / "cv_results.csv"
+ABL_PATH  = ROOT / "outputs" / "ablation_results.csv"
+DEC_PATH  = ROOT / "december_chart_inputs_completed.csv"
 CHART_IMG = ROOT / "scorer_results" / "candidate_december.png"
 OUT_DOCX  = ROOT / "report.docx"
+
+# ── Results loaded from files ─────────────────────────────────────────────────
+CV  = pd.read_csv(CV_PATH)
+ABL = pd.read_csv(ABL_PATH)
+_A0 = ABL.iloc[0]                                        # original 22 features
+_AF = ABL[ABL["config"].str.contains(r"\[final\]")].iloc[0]  # final configuration
+DEC = pd.read_csv(DEC_PATH)
+
+_AVG = CV[CV["fold"] == "avg"].set_index(["model", "subset"])
+_FOLD = CV[CV["fold"] != "avg"].copy()
+_FOLD["fold"] = _FOLD["fold"].astype(int)
+# Selected model = lower average non-outlier WAPE (same rule as src/train.py)
+SEL = ("hgbr_sq" if _AVG.loc[("hgbr_sq", "noo"), "wape"] <= _AVG.loc[("hgbr_ae", "noo"), "wape"]
+       else "hgbr_ae")
+OTHER = "hgbr_ae" if SEL == "hgbr_sq" else "hgbr_sq"
+LOSS_NAME = {"hgbr_sq": "squared_error", "hgbr_ae": "absolute_error"}
+
+
+def avg(model: str, subset: str, col: str = "wape") -> float:
+    return float(_AVG.loc[(model, subset), col])
+
+
+def red(subset: str) -> int:
+    """% reduction in WAPE of the selected model vs the naive baseline."""
+    return round(100 * (1 - avg(SEL, subset) / avg("naive", subset)))
+
+
+_dec_dates = pd.to_datetime(DEC["date"])
+DEC_MIN, DEC_MAX, DEC_MEAN = DEC["predicted_rate"].min(), DEC["predicted_rate"].max(), DEC["predicted_rate"].mean()
+_dow = DEC.groupby(_dec_dates.dt.dayofweek)["predicted_rate"].mean()
+_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 # ── Brand colours ─────────────────────────────────────────────────────────────
 TEAL_DARK  = RGBColor(0x06, 0x4A, 0x56)   # #064A56
@@ -167,10 +204,13 @@ def add_summary(doc: Document) -> None:
         "the dollar prediction is recovered as exp(output) × distance. "
         "Cross-validation uses three rolling-origin (expanding-window) folds, "
         "matching the temporal structure of the holdout set. "
-        "The best model achieves an average non-outlier WAPE of 3.34% versus "
-        "8.76% for the naive median-rate-per-mile baseline on the same rows "
-        "(a 62% reduction in weighted absolute error); including the outlier "
-        "rows the figures are 5.47% versus 10.74% (a 49% reduction)."
+        f"The best model achieves an average non-outlier WAPE of {avg(SEL, 'noo'):.2f}% versus "
+        f"{avg('naive', 'noo'):.2f}% for the naive median-rate-per-mile baseline on the same rows "
+        f"(a {red('noo')}% reduction in weighted absolute error); including the outlier "
+        f"rows the figures are {avg(SEL, 'all'):.2f}% versus {avg('naive', 'all'):.2f}% "
+        f"(a {red('all')}% reduction). "
+        "These are cross-validation figures on January–October only; the "
+        "November–December validation labels are not available."
     )
 
 
@@ -216,7 +256,7 @@ def add_data_quality(doc: Document) -> None:
          "Mapped to an '__unknown__' code (never seen in training, so not learned); lat/lon features still describe the city"],
         ["road distance vs haversine",
          "Mean gap = +170 mi (road >> straight-line)",
-         "Both distance and haversine_dist used as features; diff = routing detour proxy"],
+         "Both distance and hav_dist used as features; diff = routing detour proxy"],
     ]
 
     tbl = doc.add_table(rows=len(rows) + 1, cols=3)
@@ -314,7 +354,9 @@ def add_model(doc: Document) -> None:
     _bold_inline(p2, "Algorithm — HistGradientBoostingRegressor (sklearn):  ",
                  "Gradient-boosted histogram trees handle the mixed feature space "
                  "(numeric distances, temporal day features, and equipment, city "
-                 "and lane columns label-encoded as integers). Missing weight and "
+                 "and lane columns label-encoded as integers). Training rows are "
+                 "weighted by recency, exp(−age/90 days), so the model follows the "
+                 "latest market level. Missing weight and "
                  "market_index values are imputed before modelling, so the model "
                  "never sees NaNs. "
                  "max_iter=500, learning_rate=0.05, max_depth=6, "
@@ -327,19 +369,37 @@ def add_model(doc: Document) -> None:
                  "(b) HGBR with squared_error loss on log(RPM). "
                  "(c) HGBR with absolute_error loss on log(RPM). "
                  "Both HGBR variants far outperform the baseline. "
-                 "squared_error was selected (avg non-outlier WAPE 3.34% vs 3.38% for absolute_error).")
+                 f"{LOSS_NAME[SEL]} was selected (avg non-outlier WAPE "
+                 f"{avg(SEL, 'noo'):.2f}% vs {avg(OTHER, 'noo'):.2f}% for {LOSS_NAME[OTHER]}).")
     p3.paragraph_format.space_after = Pt(4)
 
     p4 = doc.add_paragraph()
-    _bold_inline(p4, "Features (22 total):  ",
-                 "distance, haversine_dist, road−haversine gap, weight_clean, "
+    _bold_inline(p4, "Features (26 total):  ",
+                 "distance, hav_dist, road−haversine gap, weight_clean, "
                  "market_index_filled, quote_signal, quote×distance, quote×haversine, "
                  "day_of_week, day_of_month, is_weekend, week_of_month, "
                  "pickup_lat/lon, delivery_lat/lon, lat_diff, lon_diff, "
-                 "equipment_enc, pickup_enc, delivery_enc, lane_enc. "
-                 "month_of_year and day_of_year are intentionally excluded — "
-                 "tree models cannot extrapolate a monotone trend to Nov–Dec.")
-    p4.paragraph_format.space_after = Pt(2)
+                 "equipment_enc, pickup_enc, delivery_enc, lane_enc, plus four "
+                 "market-context features: day_mi_median and day_qs_median (that date's "
+                 "median market_index and quote_signal over all loads), quote_rel "
+                 "(this load's quote_signal relative to its day's median) and day_index "
+                 "(days since 2025-01-01). All use inputs only, never the target. "
+                 "month_of_year is excluded; day_index is monotone, so every "
+                 "Nov–Dec date falls into the latest training period rather than "
+                 "being extrapolated.")
+    p4.paragraph_format.space_after = Pt(4)
+
+    p5 = doc.add_paragraph()
+    _bold_inline(p5, "Why the market-context features:  ",
+                 "market_index behaves like a daily market level (spread within a "
+                 "day 0.025, across days 0.167), and after removing lane and equipment "
+                 "effects it correlates 0.70 with that day's average price. With the "
+                 "original 22 features the model under-predicted in every fold "
+                 f"({_A0['bias_noo_fold1']:.1f}%, {_A0['bias_noo_fold2']:.1f}%, "
+                 f"{_A0['bias_noo_fold3']:.1f}% mean signed error), a near-constant level "
+                 "offset that a model with no time information cannot see. "
+                 "Section 5 shows the effect of each addition.")
+    p5.paragraph_format.space_after = Pt(2)
 
 
 # ── Section 5: Results ────────────────────────────────────────────────────────
@@ -357,15 +417,16 @@ def add_results(doc: Document) -> None:
 
     # Averaged results table
     col_h = ["Model", "Rows", "MAE ($)", "RMSE ($)", "MAPE (%)", "MedAPE (%)", "WAPE (%)"]
-    data_rows = [
-        # (model_label, subset, mae, rmse, mape, medape, wape)
-        ("Naive baseline",          "All rows",    "255.75", "677.70", "11.42", "8.02", "10.74"),
-        ("Naive baseline",          "Non-outlier", "206.04", "306.26",  "9.22", "7.89",  "8.76"),
-        ("HGBR / squared_error ✓",  "All rows",    "130.13", "630.37",  "5.81", "2.62",  "5.47"),
-        ("HGBR / squared_error ✓",  "Non-outlier",  "78.49", "132.27",  "3.57", "2.58",  "3.34"),
-        ("HGBR / absolute_error",   "All rows",    "131.05", "630.80",  "5.97", "2.46",  "5.50"),
-        ("HGBR / absolute_error",   "Non-outlier",  "79.39", "134.07",  "3.73", "2.42",  "3.38"),
-    ]
+    data_rows = []
+    for _m, _label in [("naive", "Naive baseline"),
+                       ("hgbr_sq", "HGBR / squared_error"),
+                       ("hgbr_ae", "HGBR / absolute_error")]:
+        _label = _label + (" ✓" if _m == SEL else "")
+        for _sub, _sublabel in [("all", "All rows"), ("noo", "Non-outlier")]:
+            data_rows.append((_label, _sublabel,
+                              f"{avg(_m, _sub, 'mae'):.2f}", f"{avg(_m, _sub, 'rmse'):.2f}",
+                              f"{avg(_m, _sub, 'mape'):.2f}", f"{avg(_m, _sub, 'med_ape'):.2f}",
+                              f"{avg(_m, _sub, 'wape'):.2f}"))
 
     tbl = doc.add_table(rows=len(data_rows) + 1, cols=7)
     tbl.style = "Table Grid"
@@ -401,15 +462,19 @@ def add_results(doc: Document) -> None:
 
     # Per-fold detail
     doc.add_paragraph().paragraph_format.space_after = Pt(3)
-    _body(doc, "Per-fold breakdown — HGBR / squared_error (selected model), non-outlier rows:", space_after=3)
+    _body(doc, f"Per-fold breakdown — HGBR / {LOSS_NAME[SEL]} (selected model), non-outlier rows:", space_after=3)
 
     fold_col_h = ["Fold", "Val window",          "n val", "MAE ($)", "RMSE ($)", "MAPE (%)", "MedAPE (%)", "WAPE (%)"]
-    fold_rows = [
-        ("1", "Jul–Aug 2025", "9,538",  "76.70", "117.09", "3.84", "2.08", "3.27"),
-        ("2", "Aug–Sep 2025", "9,298",  "74.97", "134.04", "3.49", "2.47", "3.20"),
-        ("3", "Sep–Oct 2025", "9,381",  "83.80", "145.68", "3.36", "3.20", "3.55"),
-        ("Avg", "—",         "—",       "78.49", "132.27", "3.57", "2.58", "3.34"),
-    ]
+    _win = {1: "Jul–Aug 2025", 2: "Aug–Sep 2025", 3: "Sep–Oct 2025"}
+    fold_rows = []
+    for _f in (1, 2, 3):
+        _r = _FOLD[(_FOLD["fold"] == _f) & (_FOLD["model"] == SEL) & (_FOLD["subset"] == "noo")].iloc[0]
+        fold_rows.append((str(_f), _win[_f], f"{int(_r['n']):,}", f"{_r['mae']:.2f}",
+                          f"{_r['rmse']:.2f}", f"{_r['mape']:.2f}", f"{_r['med_ape']:.2f}",
+                          f"{_r['wape']:.2f}"))
+    fold_rows.append(("Avg", "—", "—", f"{avg(SEL, 'noo', 'mae'):.2f}",
+                      f"{avg(SEL, 'noo', 'rmse'):.2f}", f"{avg(SEL, 'noo', 'mape'):.2f}",
+                      f"{avg(SEL, 'noo', 'med_ape'):.2f}", f"{avg(SEL, 'noo', 'wape'):.2f}"))
 
     tbl2 = doc.add_table(rows=len(fold_rows) + 1, cols=8)
     tbl2.style = "Table Grid"
@@ -432,7 +497,43 @@ def add_results(doc: Document) -> None:
                        font_size=8.5,
                        align=WD_ALIGN_PARAGRAPH.CENTER)
 
+    doc.add_paragraph().paragraph_format.space_after = Pt(3)
+    _body(doc,
+        "Where the improvement comes from — one change at a time, same 3 folds, "
+        "squared_error loss, non-outlier WAPE (%). Produced by src/ablation.py "
+        "(outputs/ablation_results.csv). The last four rows vary the recency "
+        "decay constant (days); 60–120 days gives nearly the same result, so the "
+        "outcome does not hinge on the exact value.",
+        space_after=3)
+
+    abl_h = ["Configuration", "Fold 1", "Fold 2", "Fold 3", "Avg (non-outlier)", "Avg (all rows)"]
+    tbl3 = doc.add_table(rows=len(ABL) + 1, cols=len(abl_h))
+    tbl3.style = "Table Grid"
+    tbl3.alignment = WD_TABLE_ALIGNMENT.LEFT
+    for j, h in enumerate(abl_h):
+        _set_cell_bg(tbl3.rows[0].cells[j], "1A8A9E")
+        _cell_text(tbl3.rows[0].cells[j], h, bold=True, font_size=8.5,
+                   color=WHITE, align=WD_ALIGN_PARAGRAPH.CENTER)
+    for i, (_, a) in enumerate(ABL.iterrows(), 1):
+        is_final = "[final]" in a["config"]
+        bg = "C8E6C9" if is_final else ("EFF6F7" if i % 2 == 0 else "FFFFFF")
+        vals = [a["config"], f"{a['wape_noo_fold1']:.2f}", f"{a['wape_noo_fold2']:.2f}",
+                f"{a['wape_noo_fold3']:.2f}", f"{a['wape_noo_avg']:.2f}", f"{a['wape_all_avg']:.2f}"]
+        for j, val in enumerate(vals):
+            _set_cell_bg(tbl3.rows[i].cells[j], bg)
+            _cell_text(tbl3.rows[i].cells[j], val, bold=is_final, font_size=8.5,
+                       align=WD_ALIGN_PARAGRAPH.LEFT if j == 0 else WD_ALIGN_PARAGRAPH.CENTER)
+
     doc.add_paragraph().paragraph_format.space_after = Pt(2)
+    _body(doc,
+        "Caveat: the recency constant and the feature set were chosen using these "
+        "same three folds, so the final figure is somewhat optimistic. Adding the "
+        "market features and day_index alone helps in folds 2–3 but not fold 1; "
+        "the full final configuration beats the original in all three folds. "
+        "The model still under-predicts "
+        f"(mean signed error {_AF['bias_noo_fold1']:.1f}%, {_AF['bias_noo_fold2']:.1f}%, "
+        f"{_AF['bias_noo_fold3']:.1f}% in folds 1–3, non-outlier rows).",
+        space_after=2)
 
 
 # ── Section 6: Fixed December Chart ──────────────────────────────────────────
@@ -448,9 +549,11 @@ def add_december(doc: Document) -> None:
                  "December validation rows; quote_signal median per day from all 6,164 "
                  "December validation rows). Lexington coordinates (36.99152, −84.99876) and "
                  "Fort Wayne coordinates (41.31561, −85.36206) are taken from data/train_test.csv. "
-                 "Predictions range $785.49–$803.38 (mean $795.59), a swing of about $18 "
-                 "(2%). The curve repeats weekly: the weekday means are highest on "
-                 "Thursday ($801.9) and lowest on Sunday ($789.8).")
+                 f"Predictions range ${DEC_MIN:,.2f}–${DEC_MAX:,.2f} (mean ${DEC_MEAN:,.2f}), "
+                 f"a swing of about ${DEC_MAX - DEC_MIN:,.0f} ({(DEC_MAX - DEC_MIN) / DEC_MEAN * 100:.0f}%). "
+                 f"By weekday the means are highest on {_DAYS[int(_dow.idxmax())]} "
+                 f"(${_dow.max():,.1f}) and lowest on {_DAYS[int(_dow.idxmin())]} "
+                 f"(${_dow.min():,.1f}).")
     p.paragraph_format.space_after = Pt(6)
 
     # Embed chart image
@@ -488,7 +591,9 @@ def add_reproducibility(doc: Document) -> None:
          "  --predictions validation_predictions.csv \\\n"
          "  --december-predictions december_chart_inputs_completed.csv \\\n"
          "  --output-dir scorer_results"),
-        ("# 4. (Optional) Regenerate this report",
+        ("# 4. (Optional) Re-run the feature ablation (Section 5)",
+         "python src/ablation.py"),
+        ("# 5. (Optional) Regenerate this report",
          "python make_report_docx.py"),
     ]
 
