@@ -173,7 +173,7 @@ def build_features(
 
     Parameters
     ----------
-    df        : raw dataframe (train-test or validation)
+    df        : raw dataframe (train_test or validation)
     fit       : True → fit encoders/maps from df (training mode)
                 False → apply pre-fitted artifacts (inference mode)
     artifacts : dict produced by a previous call with fit=True.

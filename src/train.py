@@ -14,8 +14,8 @@ Assumptions for December predictions
 --------------------------------------
   * market_index : per-date median from validation.csv inputs (Nov–Dec 2025).
   * quote_signal : per-date median from validation.csv inputs.
-  * Lexington lat/lon  : (36.99152, −84.99876)  from train-test.csv.
-  * Fort Wayne lat/lon : (41.31561, −85.36206)  from train-test.csv.
+  * Lexington lat/lon  : (36.99152, −84.99876)  from data/train_test.csv.
+  * Fort Wayne lat/lon : (41.31561, −85.36206)  from data/train_test.csv.
 """
 
 from __future__ import annotations
@@ -47,10 +47,10 @@ warnings.filterwarnings("ignore")
 # ─── Configuration ────────────────────────────────────────────────────────────
 RANDOM_STATE = 42
 
-TRAIN_PATH    = ROOT / "train-test.csv"
-VAL_PATH      = ROOT / "validation.csv"
-TEMPLATE_PATH = ROOT / "validation-predictions-template.csv"
-DEC_INPUT     = ROOT / "december-chart-inputs.csv"
+TRAIN_PATH    = ROOT / "data" / "train_test.csv"
+VAL_PATH      = ROOT / "data" / "validation.csv"
+TEMPLATE_PATH = ROOT / "data" / "validation_predictions_template.csv"
+DEC_INPUT     = ROOT / "data" / "december_chart_inputs.csv"
 
 OUT_CV         = ROOT / "outputs" / "cv_results.csv"
 OUT_PREDS      = ROOT / "validation_predictions.csv"
@@ -78,7 +78,7 @@ HGBR_PARAMS = dict(
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load and parse train-test.csv and validation.csv."""
+    """Load and parse data/train_test.csv and data/validation.csv."""
     train = pd.read_csv(TRAIN_PATH, parse_dates=["date"])
     val   = pd.read_csv(VAL_PATH,   parse_dates=["date"])
     print(f"  Train rows : {len(train):,}  ({train['date'].min().date()} – {train['date'].max().date()})")
@@ -320,7 +320,7 @@ def predict_december(
     Assumptions (stated in assessment report):
       * market_index : per-date median from validation.csv inputs
       * quote_signal : per-date median from validation.csv inputs
-      * Coordinates  : from train-test.csv lookup
+      * Coordinates  : from data/train_test.csv lookup
     """
     print("\n── December Predictions ─────────────────────────────────────────")
 

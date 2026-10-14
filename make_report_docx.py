@@ -168,8 +168,9 @@ def add_summary(doc: Document) -> None:
         "Cross-validation uses three rolling-origin (expanding-window) folds, "
         "matching the temporal structure of the holdout set. "
         "The best model achieves an average non-outlier WAPE of 3.34% versus "
-        "10.74% for the naive median-rate-per-mile baseline — a 68% reduction in "
-        "weighted absolute error."
+        "8.76% for the naive median-rate-per-mile baseline on the same rows "
+        "(a 62% reduction in weighted absolute error); including the outlier "
+        "rows the figures are 5.47% versus 10.74% (a 49% reduction)."
     )
 
 
@@ -180,8 +181,8 @@ def add_data_quality(doc: Document) -> None:
 
     # Intro sentence
     _body(doc,
-        "train-test.csv contains 48,000 rows (Jan–Oct 2025, 14 columns). "
-        "validation.csv contains 12,000 rows (Nov–Dec 2025, 13 columns — no posted_rate). "
+        "data/train_test.csv contains 48,000 rows (Jan–Oct 2025, 14 columns). "
+        "data/validation.csv contains 12,000 rows (Nov–Dec 2025, 13 columns — no posted_rate). "
         "The following issues were identified and treated before feature engineering:",
         space_after=5
     )
@@ -196,7 +197,7 @@ def add_data_quality(doc: Document) -> None:
          "300 train  /  165 val",
          "Median by equipment type, then global median"],
         ["Weight right-censored ≥ 47,500 lb",
-         "1,191 train  /  —",
+         "1,191 train  /  297 val",
          "Kept as-is; ceiling value is informative"],
         ["market_index missing",
          "374 train  /  249 val",
@@ -212,7 +213,7 @@ def add_data_quality(doc: Document) -> None:
          "No action required"],
         ["Cities in val absent from train",
          "8 cities (e.g. Chicago, Laredo)",
-         "OOV '__unknown__' bucket in label encoder; lat/lon features unaffected"],
+         "Mapped to an '__unknown__' code (never seen in training, so not learned); lat/lon features still describe the city"],
         ["road distance vs haversine",
          "Mean gap = +170 mi (road >> straight-line)",
          "Both distance and haversine_dist used as features; diff = routing detour proxy"],
@@ -254,16 +255,16 @@ def add_split(doc: Document) -> None:
                  "The validation set (Nov–Dec 2025) is strictly later than the "
                  "training set (Jan–Oct 2025). Random K-fold would mix future "
                  "labels into earlier training folds, artificially inflating "
-                 "performance estimates. It also exposes the model to seasonal "
-                 "patterns from Nov–Dec during tuning, making the evaluation "
-                 "overly optimistic for the real out-of-time holdout.")
+                 "performance estimates, and it would not mimic the real task of "
+                 "predicting a later period (Nov–Dec) from earlier data only.")
     p.paragraph_format.space_after = Pt(4)
 
     p2 = doc.add_paragraph()
     _bold_inline(p2, "Strategy used — rolling-origin (expanding window):  ",
                  "Three forward-chaining folds were used. In each fold the "
-                 "training window expands by one month and the validation "
-                 "window advances by two months, mirroring production conditions.")
+                 "training window expands by one month and the two-month validation "
+                 "window advances by one month (adjacent validation windows "
+                 "overlap by one month), mirroring production conditions.")
     p2.paragraph_format.space_after = Pt(5)
 
     # Fold table
@@ -301,8 +302,9 @@ def add_model(doc: Document) -> None:
 
     p = doc.add_paragraph()
     _bold_inline(p, "Target — log(rate-per-mile):  ",
-                 "Rate-per-mile (RPM = posted_rate / distance) is right-skewed "
-                 "and heteroscedastic. Modelling log(RPM) stabilises variance, "
+                 "Rate-per-mile (RPM = posted_rate / distance) is strongly right-skewed "
+                 "(skewness 8.72 raw, −0.04 after the log). Modelling log(RPM) "
+                 "gives a near-symmetric target, "
                  "ensures predictions are always positive, and respects the "
                  "multiplicative relationship between price-per-mile and distance. "
                  "Predictions are recovered as  exp(model output) × distance.")
@@ -311,9 +313,10 @@ def add_model(doc: Document) -> None:
     p2 = doc.add_paragraph()
     _bold_inline(p2, "Algorithm — HistGradientBoostingRegressor (sklearn):  ",
                  "Gradient-boosted histogram trees handle the mixed feature space "
-                 "(numeric distances, categorical lanes, temporal day features) "
-                 "without one-hot explosion. The native NaN support is exploited "
-                 "for market_index before imputation verification. "
+                 "(numeric distances, temporal day features, and equipment, city "
+                 "and lane columns label-encoded as integers). Missing weight and "
+                 "market_index values are imputed before modelling, so the model "
+                 "never sees NaNs. "
                  "max_iter=500, learning_rate=0.05, max_depth=6, "
                  "min_samples_leaf=20, l2_regularization=0.1, seed=42.")
     p2.paragraph_format.space_after = Pt(4)
@@ -439,14 +442,15 @@ def add_december(doc: Document) -> None:
 
     p = doc.add_paragraph()
     _bold_inline(p, "Assumption — market_index and quote_signal:  ",
-                 "The december-chart-inputs.csv file does not include these columns. "
-                 "Both are filled with their per-date median from validation.csv inputs "
-                 "for December 2025 (market_index median per day from ~380 non-missing "
-                 "December validation rows; quote_signal median per day from all 12,000 "
-                 "validation rows). Lexington coordinates (36.99152, −84.99876) and "
-                 "Fort Wayne coordinates (41.31561, −85.36206) are taken from train-test.csv. "
-                 "Predictions range $785.49–$803.38 (mean $795.59), showing a clear "
-                 "weekly cycle with mid-week peaks and weekend dips.")
+                 "The data/december_chart_inputs.csv file does not include these columns. "
+                 "Both are filled with their per-date median from data/validation.csv inputs "
+                 "for December 2025 (market_index median per day from the 6,030 non-missing "
+                 "December validation rows; quote_signal median per day from all 6,164 "
+                 "December validation rows). Lexington coordinates (36.99152, −84.99876) and "
+                 "Fort Wayne coordinates (41.31561, −85.36206) are taken from data/train_test.csv. "
+                 "Predictions range $785.49–$803.38 (mean $795.59), a swing of about $18 "
+                 "(2%). The curve repeats weekly: the weekday means are highest on "
+                 "Thursday ($801.9) and lowest on Sunday ($789.8).")
     p.paragraph_format.space_after = Pt(6)
 
     # Embed chart image

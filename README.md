@@ -4,7 +4,7 @@
 
 Predicts the `posted_rate` (freight load price in USD) for 12,000 unseen loads
 using a `HistGradientBoostingRegressor` trained on 48,000 labeled loads
-(`train-test.csv`). The model targets `log(rate-per-mile)` and recovers the
+(`data/train_test.csv`). The model targets `log(rate-per-mile)` and recovers the
 dollar prediction via `exp(output) × distance`.
 
 ---
@@ -63,17 +63,17 @@ ML_assignment/
 │   └── cv_results.csv         Cross-validation results table
 ├── scorer_results/
 │   └── candidate_december.png December rate chart
-├── data/                      (empty — data files live in repo root)
-├── train-test.csv             48,000 labeled training loads (Jan–Oct 2025)
-├── validation.csv             12,000 unlabeled loads (Nov–Dec 2025)
-├── validation-predictions-template.csv  Submission template
-├── december-chart-inputs.csv  31-day fixed-lane December inputs
+├── data/
+│   ├── train_test.csv                     48,000 labeled training loads (Jan–Oct 2025)
+│   ├── validation.csv                     12,000 unlabeled loads (Nov–Dec 2025)
+│   ├── validation_predictions_template.csv  Submission template
+│   └── december_chart_inputs.csv          31-day fixed-lane December inputs
 ├── validation_predictions.csv  ← SUBMISSION FILE
 ├── december_chart_inputs_completed.csv  ← DECEMBER FILE
 ├── score.py                   Assessment validator (do not modify)
 ├── requirements.txt
 ├── README.md
-└── report.pdf                 2-3 page write-up
+└── report.docx                Write-up (validation approach + December chart)
 ```
 
 ---
@@ -89,16 +89,16 @@ ML_assignment/
 | Market index NaN → date-median from inputs | No target leakage; matches spec |
 | Seed = 42 everywhere | Deterministic, reproducible outputs |
 
-See `report.pdf` for full details.
+See `report.docx` for full details.
 
 ---
 
 ## Assumptions for December Predictions
 
-The `december-chart-inputs.csv` file does not contain `market_index` or
+The `data/december_chart_inputs.csv` file does not contain `market_index` or
 `quote_signal`. The following assumptions are applied:
 
 1. **`market_index`**: per-date median from `validation.csv` inputs for December 2025.
 2. **`quote_signal`**: per-date median from `validation.csv` inputs for December 2025.
-3. **Lexington coordinates**: `(36.99152, −84.99876)` — looked up from `train-test.csv`.
-4. **Fort Wayne coordinates**: `(41.31561, −85.36206)` — looked up from `train-test.csv`.
+3. **Lexington coordinates**: `(36.99152, −84.99876)` — looked up from `data/train_test.csv`.
+4. **Fort Wayne coordinates**: `(41.31561, −85.36206)` — looked up from `data/train_test.csv`.
